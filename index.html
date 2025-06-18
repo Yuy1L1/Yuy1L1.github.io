@@ -1,45 +1,30 @@
+<!DOCTYPE html>
 <meta charset="utf-8" emacsmode="-*- markdown -*">
-**Yuyi Li**
+<!-- Markdeep: -->
 
-First year CS PhD Student
+<!-- Markdeep config: turn off numbering -->
+<script>
+  window.markdeepOptions = { numbering: false };
+</script>
 
-University of California, Davis 
+<!-- Load Markdeep AFTER setting config -->
+<script src="https://morgan3d.github.io/markdeep/latest/markdeep.min.js?" charset="utf-8"></script>
 
-Advisor: Amanda Raybuck  
-
--------------------------------------------------------------------------------
-### 🧠 Research Interests
-- Memory Management
-- Tiered Memory Systems
-
--------------------------------------------------------------------------------
-### 📄 Publications / Projects
-1. **[Paper Title or Project Name]**  
-   *Conference or context, year*  
-   Short one-liner summary. [Link](#)
-
-2. **[Another One]**  
-   *OSDI ’26 (expected)*  
-   Prefetching logic, memory tiers
-
--------------------------------------------------------------------------------
-### 💻 Software
-- **Amem** – Adaptive memory tier prefetcher.  
-- **[Tool Name]** – Short description here.  
-
--------------------------------------------------------------------------------
-### 📬 Contact
-- Email: [nylli@ucdavis.edu](mailto:nylli@ucdavis.edu)  
-- GitHub: [github.com/Yuy1L1](https://github.com/Yuy1L1)
-- LinkedIn: [linkedin.com/in/vivian-yuyi-li-16b78a210](https://www.linkedin.com/in/vivian-yuyi-li-16b78a210/)
-- Mastodon: https://discuss.systems/@viv
-
--------------------------------------------------------------------------------
-
-<!-- Markdeep scripts -->
+<!-- Optional fallback -->
 <!-- <style class="fallback">
-  body {visibility:hidden; white-space:pre; font-family:monospace}
+  body { visibility: hidden; white-space: pre; font-family: monospace }
 </style> -->
+
+<!-- Extra override just in case Markdeep ignores config -->
+<style>
+  h1::before, h2::before, h3::before {
+    content: none !important;
+  }
+
+  ol > li::marker {
+    content: '' !important;
+  }
+</style>
 
 <style>
   body {
@@ -58,8 +43,42 @@ Advisor: Amanda Raybuck
     margin-bottom: 0.2em;
   }
 </style>
-<script src="https://morgan3d.github.io/markdeep/latest/markdeep.min.js?" charset="utf-8"></script>
-<script>
-  window.alreadyProcessedMarkdeep || (document.body.style.visibility = "visible");
-</script>
 
+<!-- Your actual content -->
+# Yuyi Li
+CS PhD Student
+
+University of California, Davis 
+
+Advisor: Amanda Raybuck  
+
+[My CV Here](https://drive.google.com/file/d/1U3kMEJMaBjvbVD5Ir7hYnXUCW9cXtX5S/view?usp=sharing)
+
+# Short Bio
+Hi! I’m Yuyi Li, a first-year PhD student at UC Davis working on systems research 
+with a focus on operating systems, memory technologies, hardware side-channels, 
+and hardware simulation.
+
+# Projects
+
+**Software Prefetcher for Tiered Memory systems**  
+
+   Designing adaptive prefetching heuristics for DRAM–CXL hybrid memory systems, guided by ML workload semantics.
+
+**CPU Print (Hardware Fingerprinting)**
+    
+   Leading the ML pipeline for robust browser fingerprinting using DVFS-induced timing signatures in CPU.
+
+**FairMem (QoS-Aware Tiered Memory)**
+
+  Optimizing DRAM–NVM allocation fairness in multi-tenant systems through dynamic page migration and latency analysis.
+
+**gem5 GPU Simulation Library**
+
+  Created a modular GPU frontend library for gem5, enabling high-fidelity and reproducible simulation of GPU workloads.
+
+# Contact
+- Email: [nylli@ucdavis.edu](mailto:nylli@ucdavis.edu)  
+- GitHub: [github.com/Yuy1L1](https://github.com/Yuy1L1)
+- LinkedIn: [linkedin.com/in/vivian-yuyi-li](https://www.linkedin.com/in/vivian-yuyi-li-16b78a210/)
+- Mastodon: [discuss.systems/@viv](https://discuss.systems/@viv)
