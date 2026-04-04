@@ -65,14 +65,13 @@ University of California, Davis
 
 # About Me
 
-Hi, my name is Yuyi. I’m a first-year PhD student at [UC Davis](https://cs.ucdavis.edu/graduate), 
+Hi, my name is Yuyi. I’m a second-year PhD student at [UC Davis](https://cs.ucdavis.edu/graduate), 
 where I’m fortunate to be advised by [Amanda Raybuck](https://web.cs.ucdavis.edu/~araybuck/). 
 Before joining the PhD program, I worked with Prof. Jason Lowe-Power on computer architecture and memory systems, 
 which sparked my interest in OS-level performance. I did my undergrad at Davis as well (yes, I never left). 
 I majored in Computer Science with a Math minor, mostly because I liked proving things wrong using counterexamples. 
 
-My research interests include memory systems and emerging memory technologies, hardware side-channel, 
-and the power-efficiency trade-offs in large-scale system design.
+My research interests include memory systems, GPU communication, and hardware side-channel.
 
 Apart from research, I split my time between biking and playing questionable notes on my electric bass when I think no one’s listening. It’s jazz. Probably;)
 I occasionally open [Project Euler](https://projecteuler.net/) just to scroll past problems I don’t understand. 
@@ -81,15 +80,21 @@ If you're into math elegance (or masochism), here's [21 proofs of Euler’s form
 Feel free to reach out if you want to talk about systems, jazz, or jazzy systems.
 
 
-# Projects
+# Current Projects
 
-**Software Prefetcher for Tiered Memory systems**  
+** LLM for GPU Communications**
 
-   Designing adaptive prefetching heuristics for DRAM–CXL hybrid memory systems, guided by ML workload semantics.
+   Building a benchmark suite to evaluate LLM-generated multi-GPU communication code across diverse hardware (Nvidia H100, GB200, AMD MI325x) and communication stacks (NCCL, MSCCL++, RDMA, NVLink).
+
+**Agentic Memory Manager for Tiered Memory systems**  
+
+   Iniviting agents to digest memory access patterns, predict future accesses, and make informed decisions on paging policies in DRAM+CXL memory systems.
 
 **CPU Print (Hardware Fingerprinting)**
     
    Leading the ML pipeline for robust browser fingerprinting using DVFS-induced timing signatures in CPU.
+
+   Achieving 89% accuracy across ~250 in-the-wild devices
 
 **HammerSim (gem5 based simulation tool for Rowhammer)**
     
@@ -99,18 +104,24 @@ Feel free to reach out if you want to talk about systems, jazz, or jazzy systems
 
   Optimizing DRAM–NVM allocation fairness in multi-tenant systems through dynamic page migration and latency analysis.
 
+# Past Projects
 **gem5 simulator GPU Library**
 
   Created a modular GPU frontend library for gem5, enabling high-fidelity and reproducible simulation of GPU workloads.
 
 # Teaching
+- ECS 122A: Undergraduate Algorithm Design. Teaching Assistant. Winter 2026
 - ECS 120: Undergraduate Theory of Computation. Teaching Assistant. Fall 2023
 - [ECS 189G](https://github.com/ucdavis/FairMLCourse): Ethics in Machine Learning. Teaching Assistant. Spring 2023
 
+
 # Service
-- Reviewer for [AISec](https://aisec.cc/) Workshop(Co-located with ACM CCS) 2025
+- Shadow PC for [Sigmetrics](https://www.sigmetrics.org/sigmetrics2026/shadowpc.html) 2026
 - Artifact Evaluator for [EuroSys](https://sysartifacts.github.io/eurosys2026/organizers) 2026
 - Artifact Evaluator for [SIGCOMM](https://conferences.sigcomm.org/sigcomm/2025/cf-artifacts/#:~:text=Organizers) 2025
+- Reviewer for [AISec](https://aisec.cc/) Workshop(Co-located with ACM CCS) 2025
 
 # Award
-- OSDI 2025 Student Travel Grant
+- ASPLOS Student Travel Grant 2026
+- OSDI Student Travel Grant 2025
+
