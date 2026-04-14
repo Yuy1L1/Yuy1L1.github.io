@@ -4,7 +4,7 @@
 
 <!-- Markdeep config: turn off numbering -->
 <script>
-  window.markdeepOptions = { numbering: false };
+  window.markdeepOptions = { numbering: false, tocStyle: 'none' };
 </script>
 
 <!-- Load Markdeep AFTER setting config -->
@@ -17,6 +17,13 @@
 
 <!-- Extra override just in case Markdeep ignores config -->
 <style>
+  .longTOC,
+  .mediumTOC,
+  .shortTOC,
+  .toc {
+    display: none !important;
+  }
+
   h1::before, h2::before, h3::before {
     content: none !important;
   }
@@ -124,4 +131,3 @@ Feel free to reach out if you want to talk about systems, jazz, or jazzy systems
 # Award
 - ASPLOS Student Travel Grant 2026
 - OSDI Student Travel Grant 2025
-
