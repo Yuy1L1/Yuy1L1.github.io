@@ -22,9 +22,9 @@ This is made possible with the hardware support from the [UCCL project](https://
 10. Interlude: kernel launches as synchronization boundaries
 11. Interlude: row-wise softmax is a reduction problem
 12. Horizontal vs vertical decomposition
-13. Online softmax: the missing trick
+13. Level 2: Online softmax, the missing trick
 14. What fused attention changes
-15. Level 2: toward a FlashAttention-style kernel
+15. Level 3: toward a FlashAttention-style kernel
 16. Bugs I hit
 17. Reading notes: TBD
 18. Experiments and benchmarks
@@ -85,7 +85,7 @@ from transpose, reduction, softmax, and GEMM.
 The transpose part is basically the transpose blog again. Intuitively, we can
 write something like:
 
-```
+```cpp
 __global__ void transpose(const float* __restrict__ input, float* __restrict__ transposed, int M, int N) {
     int row = blockDim.y * blockIdx.y + threadIdx.y;
     int col = blockDim.x * blockIdx.x + threadIdx.x;
@@ -127,12 +127,8 @@ row-wise softmax
 GEMM: softmax_result * V
 ```
 
-This is not meant to be the final attention kernel. It is the version where I
-can see every dependency and every place I got stuck.
 
-
-
-```
+```cpp
 #include <cuda_runtime.h>
 #include <math.h>
 #define FULL_MASK 0xffffffff 
@@ -143,49 +139,47 @@ can see every dependency and every place I got stuck.
 // fourth step: softmax
 // fifth step: GEMM
 
-__global__ void transpose(const float* __restrict__ input, float* __restrict__ transposed, int N, int d) {
-    int row = blockDim.y * blockIdx.y + threadIdx.y;
-    int col = blockDim.x * blockIdx.x + threadIdx.x;
+#include <cuda_runtime.h>
+#include <math.h>
+#include <float.h>
+#define FULL_MASK 0xffffffff 
 
-    __shared__ float shared[16][16];
+// first step: transpose K
+// second step: multiply Q and K_t
+// third step: elementwise division
+// fourth step: softmax
+// fifth step: GEMM
 
-    int buffer_row = threadIdx.y;
-    int buffer_col = threadIdx.x;
+__global__ void transpose(const float* __restrict__ input,
+                          float* __restrict__ transposed,
+                          int N, int d) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y; // K row, 0..N-1
+    int col = blockIdx.x * blockDim.x + threadIdx.x; // K col, 0..d-1
 
     if (row < N && col < d) {
-        // load data in
-        shared[buffer_row][buffer_col] = input[row * N + col];
+        transposed[col * N + row] = input[row * d + col];
     }
-    else {
-        shared[buffer_row][buffer_col] = 0.0f;
-    }
-    
-    __syncthreads();
-
-    // write back
-    int out_row = blockIdx.x * 16 + threadIdx.x;
-    int out_col = blockIdx.y * 16 + threadIdx.y;
-        
-    if (out_row < d && out_col < N) {
-        transposed[out_row * N + out_col] = shared[buffer_col][buffer_row];
-    }
-    __syncthreads();
-
 }
 
 
-__global__ void matrix_multiplication(float* __restrict__ input_A, float* __restrict__ input_B, float* __restrict__ gemm_result, int M, int N, int d) {
+__global__ void matrix_multiplication(
+    const float* __restrict__ input_A, 
+    const float* __restrict__ input_B, 
+    float* __restrict__ gemm_result, 
+    int dim_A, 
+    int dim_B, 
+    int dim_C) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     float sum = 0.0f;
 
-    if (row < M && col < N) {
-        for(int k = 0; k < d; k++){
-            sum += input_A[row * d + k] * input_B[k * N + col];
+    if (row < dim_A && col < dim_B) {
+        for(int k = 0; k < dim_C; k++){
+            sum += input_A[row * dim_C + k] * input_B[k * dim_B + col];
         }
+        gemm_result[row * dim_B + col] = sum;
     }
-    __syncthreads();
-    gemm_result[row * N + col] = sum;
+    
 }
 
 __global__ void division(float* __restrict__ input, int M, int N, int d) {
@@ -231,7 +225,7 @@ __global__ void find_max_per_block(float* __restrict__ input, int input_size, fl
     __syncthreads();
 
     if (warp_id == 0) {
-        val = (lane_id < 8) ? shared[lane_id] : 0.0f;
+        val = (lane_id < 8) ? shared[lane_id] : -FLT_MAX;
         val = fmax(val, __shfl_down_sync(FULL_MASK, val, 4));
         val = fmax(val, __shfl_down_sync(FULL_MASK, val, 2));
         val = fmax(val, __shfl_down_sync(FULL_MASK, val, 1));
@@ -330,7 +324,7 @@ __global__ void reduction(float* __restrict__ blockwise, int input_size, float* 
     __shared__ float shared[256];
 
     if (i < blockwise_size) {
-        shared[i] = blockwise[tid];
+        shared[i] = blockwise[i];
     } else {
         shared[i] = 0.0f;
     }
@@ -347,59 +341,72 @@ __global__ void reduction(float* __restrict__ blockwise, int input_size, float* 
     if (i == 0) { reduction_result[0] = shared[0]; }
 }
 
-// we need a big, softmax function to tie it up
+__global__ void divide(float* __restrict__ input, int N, float* reduction_result) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i < N) {
+        input[i] = input[i] / reduction_result[0];
+    }
+}
 
 
 // Q, K, V, output are device pointers
 extern "C" void solve(const float* Q, const float* K, const float* V, float* output, int M, int N, int d) {
     dim3 threadsPerBlock(16, 16);
-    dim3 blocksPerGrid((K + threadsPerBlock.x - 1) / threadsPerBlock.x,
+    dim3 blocksPerGrid((N + threadsPerBlock.x - 1) / threadsPerBlock.x,
                        (M + threadsPerBlock.y - 1) / threadsPerBlock.y);
-    
 
+    // now, 1D launch
+    int TPB = 256;
+    int BPG = (N + TPB - 1) / TPB;
 
-    float *tranposed, *gemm_result. *blockwise, *max_result;
+    float *transposed, *gemm_result, *blockwise, *max_result, *reduction_result;
     cudaMalloc(&transposed, sizeof(float) * N * d);
     cudaMalloc(&gemm_result, sizeof(float) * M * N);
-    cudaMalloc(&blockwise, sizeof(float) * blockDim.x); // what is this?
+    cudaMalloc(&blockwise, sizeof(float) * BPG);
     cudaMalloc(&max_result, sizeof(float));
     cudaMalloc(&reduction_result, sizeof(float));
 
-    transpose<<<>>>(input, float* __restrict__ transposed, N, d);
+    dim3 transposeBlock(16, 16);
+    dim3 transposeGrid((d + 15) / 16, (N + 15) / 16);
+
+    transpose<<<transposeGrid, transposeBlock>>>(K, transposed, N, d);
 
     cudaDeviceSynchronize();
 
-    gemm<<<blocksPerGrid, threadsPerBlock>>>(Q, transposed, gemm_result, int M, int N, int d);
+    matrix_multiplication<<<blocksPerGrid, threadsPerBlock>>>(Q, transposed, gemm_result, M, N, d);
 
     cudaDeviceSynchronize();
 
-    division<<<>>>(gemm_result, int M, int N, int d);
+    division<<<blocksPerGrid, threadsPerBlock>>>(gemm_result, M, N, d);
 
     cudaDeviceSynchronize();
 
     // this is the problem. i am doing softmax per row. so now given gemm result is M * N.
     // I need to do this M times
     for(int i = 0; i < M; i++) {
-        find_max_per_block<<<>>>(float* __restrict__ input, N, blockwise);
+        float* row_ptr = gemm_result + i * N;
+        find_max_per_block<<<BPG, TPB>>>(row_ptr, N, blockwise);
             cudaDeviceSynchronize();
 
-        find_max<<<>>>(blockwise, N, max_result);
+        find_max<<<1, TPB>>>(blockwise, N, max_result);
         cudaDeviceSynchronize();
 
-        subtract<<<>>>(float* __restrict__ input, N, max_result);
+        subtract<<<BPG, TPB>>>(row_ptr, N, max_result);
         cudaDeviceSynchronize();
 
-        reduction_per_block<<<>>>(float* __restrict__ input, N, blockwise);
+        reduction_per_block<<<BPG, TPB>>>(row_ptr , N, blockwise);
         cudaDeviceSynchronize();
 
-        reduction<<<>>>(blockwise, N, reduction_result);
+        reduction<<<1, TPB>>>(blockwise, N, reduction_result);
         cudaDeviceSynchronize();
 
-        // i need to division, element wise
-        // TODO
+        divide<<<BPG, TPB>>>(row_ptr, N, reduction_result);
     }
 
-    gemm<<<blocksPerGrid, threadsPerBlock>>>(Q, V, gemm_result, int M, int N, int d);
+    dim3 finalGrid((d + threadsPerBlock.x - 1) / threadsPerBlock.x,
+                   (M + threadsPerBlock.y - 1) / threadsPerBlock.y);
+    matrix_multiplication<<<finalGrid, threadsPerBlock>>>(gemm_result, V, output, M, d, N);
     cudaDeviceSynchronize();
 
     cudaFree(transposed);
@@ -409,37 +416,37 @@ extern "C" void solve(const float* Q, const float* K, const float* V, float* out
     cudaFree(reduction_result);
 
 }
+
 ```
 
-The clearest problem in this baseline is the host-side loop over `M` rows. Each
-row-wise softmax step launches several kernels and synchronizes repeatedly, so
-the GPU keeps waiting for the CPU to issue the next phase. This is the first
-place where attention wants to become a fused kernel instead of a sequence of
-independent kernels.
+The above kernel works just fine. And it is my first softmax kernel. One of its most obivous problem is the host-side loop.
+
+On a Nvidia Tesla T4 GPU, for M = 512 and n = 256, this kernel takes 24.91 ms to finish.
+Unless stated otherwise, the result is going to be measured with this M and N with each entry FP32.
+We are only at 6.1th percentile.
+
+<div style="border: 1px solid #d0d7de; border-left: 4px solid #0969da; padding: 0.85rem 1rem; margin: 1rem 0; border-radius: 6px; background: #f6f8fa;">
+  <strong>Crux 1.</strong> Can we avoid host-side synchronization and extra global-memory trips by letting one kernel finish each row's softmax?
+</div>
+
+The answer is yes.
 
 ## Where the baseline gets stuck
 
-The baseline gets stuck at the exact place where attention stops feeling like a
-simple composition of known kernels.
-
-The important line is this comment:
-
-```cpp
-// this is the problem. i am doing softmax per row. so now given gemm result is M * N.
-// I need to do this M times
-```
-
-That is the right realization. After `QK^T`, the score matrix is `M x N`, and
-softmax is not one global softmax. It is `M` separate row-wise softmaxes. Each
-row needs:
+The baseline bottleneck is the host-side loop over `M` rows. After `QK^T`, the
+score matrix is `M x N`, but softmax is not one global operation. It is `M`
+independent row-wise softmaxes, and each row needs:
 
 1. a max reduction,
 2. an elementwise `expf`,
 3. a sum reduction,
 4. an elementwise division.
 
-The baseline can do this, but it starts to look like a pile of kernels,
-temporary buffers, and synchronization points.
+Level 0 does all of that correctly, but each row becomes a chain of kernel
+launches, temporary buffers, global-memory trips, and synchronization points.
+The CPU keeps issuing the next phase while the GPU waits at boundaries. This is
+where attention stops looking like a clean composition of known kernels and
+starts asking for fusion.
 
 ## Level 1: fusing row-wise softmax
 
@@ -485,6 +492,11 @@ The new path replaces that row loop with a single `fused_softmax` launch:
       ...
   }
 ```
+
+Here is the exact code, folded so the main narrative stays easy to scan.
+
+<details markdown="1">
+<summary>Full Level 1 code</summary>
 
 ```cpp
 #include <cuda_runtime.h>
@@ -541,7 +553,8 @@ __global__ void division(float* __restrict__ input, int M, int N, int d) {
 }
 
 __global__ void fused_softmax(float* __restrict__ input, int N) {
-    // first fused kernel, intermediate results live in registers and shared memory. 
+    // this is my first fused kernel
+    // Intermediate results live in registers and shared memory.
     // The rule is: if data is produced and consumed in the same logical step, 
     // it should never touch global memory.
 
@@ -567,7 +580,7 @@ __global__ void fused_softmax(float* __restrict__ input, int N) {
     for (int i = tid; i < N; i += blockDim.x)
         val = fmax(val, row[i]);
 
-    // NOW reduce val across all threads in the block → one max_res
+    // NOW reduce val across all threads in the block -> one max_res
     // ... warp shuffle + shared mem reduction ...
     while(stride > 0) {
         val = fmax(val, __shfl_down_sync(FULL_MASK, val, stride));
@@ -579,8 +592,8 @@ __global__ void fused_softmax(float* __restrict__ input, int N) {
         warp_scratch[warp_id] = val;
     }
     __syncthreads();
-    // warp reduce → shared[warp_id] = warp max
-    // warp 0 reduces shared[] → max_res
+    // warp reduce -> shared[warp_id] = warp max
+    // warp 0 reduces shared[] -> max_res
     if(warp_id == 0) {
         val = warp_scratch[lane_id];
         stride = 16;
@@ -605,7 +618,7 @@ __global__ void fused_softmax(float* __restrict__ input, int N) {
     for (int i = tid; i < N; i += blockDim.x)
         val += row[i];
 
-    // NOW reduce val across all threads in the block → one max_res
+    // NOW reduce val across all threads in the block -> one max_res
     // ... warp shuffle + shared mem reduction ...
     lane_id = tid % 32; 
     warp_id = tid / 32;
@@ -622,8 +635,8 @@ __global__ void fused_softmax(float* __restrict__ input, int N) {
         warp_scratch[warp_id] = val;
     }
     __syncthreads();
-    // warp reduce → shared[warp_id] = warp reduction
-    // warp 0 reduces shared[] → max_res
+    // warp reduce -> shared[warp_id] = warp reduction
+    // warp 0 reduces shared[] -> max_res
     if(warp_id == 0) {
         val = warp_scratch[lane_id];
         stride = 16;
@@ -683,6 +696,13 @@ extern "C" void solve(const float* Q, const float* K, const float* V, float* out
 }
 ```
 
+</details>
+
+Almost immediately, we see a great performance boost on the exact same GPU with this fused softmax
+kernel.
+
+We are now at 75.4th percentile, spending only 0.49ms on the same metric.
+
 ## What the fused softmax fixed
 
 The fused softmax kernel removes the host-side loop over `M` rows. Instead of
@@ -699,7 +719,7 @@ CPU to launch the next phase.
 This fixed one obvious problem: the row-wise softmax no longer forces an
 outer-loop on the host.
 
-TBD: measure the difference in kernel count and host-side synchronization cost
+TODO: measure the difference in kernel count and host-side synchronization cost
 between the explicit baseline and the fused-softmax version.
 
 ## What is still materialized
@@ -744,12 +764,11 @@ And the cost is not just allocation. The staged pipeline writes `gemm_result`,
 reads it for scaling and softmax, writes it again, and reads it again for the
 final multiplication by `V`.
 
-So the big question becomes:
+<div style="border: 1px solid #d0d7de; border-left: 4px solid #0969da; padding: 0.85rem 1rem; margin: 1rem 0; border-radius: 6px; background: #f6f8fa;">
+  <strong>Crux 2.</strong> Can I compute the final output without writing the whole <code>M x N</code> attention matrix to global memory?
+</div>
 
-```
-Can I compute the final output without writing the whole M x N attention matrix
-to global memory?
-```
+The answer is again, yes.
 
 ## Interlude: kernel launches as synchronization boundaries
 
@@ -822,11 +841,11 @@ The hard part is that operations are not always independent across tiles.
 Softmax is the annoying one because it seems to need the global max and global
 sum of the whole row.
 
-## Online softmax: the missing trick
+## Level 2: Online softmax, the missing trick
 
-If I process only one tile of a row, I do not know the final row max yet. At
-first, this feels like a deal-breaker. If tile 2 has a larger max than tile 1,
-do I need to go back and recompute tile 1's exponentials?
+<div style="border: 1px solid #d0d7de; border-left: 4px solid #0969da; padding: 0.85rem 1rem; margin: 1rem 0; border-radius: 6px; background: #f6f8fa;">
+  <strong>Crux 3.</strong> If I process only one tile of a row, I do not know the final row max yet. If a later tile has a larger max, do I need to recompute the earlier exponentials?
+</div>
 
 The answer is no. I need to rescale.
 
@@ -868,54 +887,50 @@ change is that we avoid writing the full attention matrix to global memory.
 
 Instead of:
 
-```
-compute all scores
-store all scores
-softmax all scores
-store all probabilities
-multiply probabilities by V
-```
+1. compute all scores
+2. store all scores
+3. softmax all scores
+4. store all probabilities
+5. multiply probabilities by V
+
 
 the fused version tries to do this in tiles:
 
-```
-load a block of Q
-for blocks of K and V:
+1. load a block of Q
+2. for blocks of K and V:
+
     compute partial QK^T scores
+
     update online softmax state
+
     accumulate partial output
-write final output
-```
 
-The new state to understand is:
-
-```
-row_max
-row_sum
-partial_output
-```
+3. write final output
 
 This is where FlashAttention enters the story.
 
-## Level 2: toward a FlashAttention-style kernel
+## Level 3: toward a FlashAttention-style kernel
 
 The next code block is my first attempt at moving from "fuse only softmax" to
 "fuse the attention pipeline." It uses tiles of `K` and `V`, computes a tile of
 `QK^T`, updates online softmax state, and accumulates the output.
 
 This is still a learning implementation, not FlashAttention-2 or a production
-kernel. The point is that the algorithmic shape is now different: the full
-`M x N` attention matrix no longer has to exist in global memory.
+kernel.
 
+<div style="border: 1px solid #d0d7de; border-left: 4px solid #0969da; padding: 0.85rem 1rem; margin: 1rem 0; border-radius: 6px; background: #f6f8fa;">
+  <strong>Crux 4.</strong> The full <code>M x N</code> attention matrix no longer has to exist in global memory.
+</div>
 
-```
+Here is the code
+
+```cpp
 #include <cuda_runtime.h>
 #include <math.h>
 #include <float.h>
 #define FULL_MASK 0xffffffff 
 #define TILE_SIZE 32
-#define MAX_D 128 // why?
-
+#define MAX_D 128
 
 __global__ void flash_attention(
     const float* __restrict__ Q,
@@ -930,6 +945,10 @@ __global__ void flash_attention(
         int row = blockIdx.x;
         int lane_id = tid % 32; 
         int warp_id = tid / 32;
+
+        // these are the initialization.
+        // but in actual code writing, I leave this part blank and
+        // fill in as my implementation goes.
 
         __shared__ float K_tile[TILE_SIZE * MAX_D];
         __shared__ float V_tile[TILE_SIZE * MAX_D];
@@ -987,7 +1006,7 @@ __global__ void flash_attention(
             }
                 
             
-            // NOW reduce val across all threads in the block → one max_res
+            // NOW reduce val across all threads in the block -> one max_res
             // ... warp shuffle + shared mem reduction ...
             for (int stride = 16; stride > 0; stride /= 2)
                 val = fmax(val, __shfl_down_sync(FULL_MASK, val, stride));
@@ -996,8 +1015,8 @@ __global__ void flash_attention(
                 warp_scratch[warp_id] = val;
             }
             __syncthreads();
-            // warp reduce → shared[warp_id] = warp max
-            // warp 0 reduces shared[] → max_res
+            // warp reduce -> shared[warp_id] = warp max
+            // warp 0 reduces shared[] -> max_res
             if(warp_id == 0) {
                 val = (lane_id < (blockDim.x / 32)) ? warp_scratch[lane_id] : -FLT_MAX;
                 stride = 16;
@@ -1029,8 +1048,8 @@ __global__ void flash_attention(
                 warp_scratch[warp_id] = val;
             }
             __syncthreads();
-            // warp reduce → shared[warp_id] = warp reduction
-            // warp 0 reduces shared[] → max_res
+            // warp reduce -> shared[warp_id] = warp reduction
+            // warp 0 reduces shared[] -> max_res
             if(warp_id == 0) {
                 val = (lane_id < (blockDim.x / 32)) ? warp_scratch[lane_id] : 0.0f;
                 stride = 16;
@@ -1080,7 +1099,7 @@ extern "C" void solve(const float* Q, const float* K, const float* V, float* out
 
 ```
 
-## Bugs I hit
+## Interlude: Bugs I hit trying to go from partially fused to fully fused Flash-Attention Style kernel
 
 These are the bugs I hit before reaching a compilable and runnable fused
 attention-style kernel.
@@ -1131,14 +1150,7 @@ The two hardest bugs to spot were:
 2. The padding bug. Zeroing `K_tile` and `V_tile` for out-of-bounds rows felt
    correct, but the real fix was setting `S[t] = -FLT_MAX` at the score stage.
 
-## Reading notes: TBD
 
-TBD: read the FlashAttention paper with the online softmax update in mind.
-
-TBD: read the Triton fused-attention tutorial because it exposes variables like
-`m_i`, `l_i`, and `acc`, which map directly to the running softmax state.
-
-TBD: read CUTLASS/CuTe attention examples for the hardware-aware tiled version.
 
 ## Experiments and benchmarks (WIP)
 
@@ -1149,9 +1161,7 @@ On Nvidia Tesla T4:
 The naive fused-attention-style kernel takes roughly 3.75 ms for `M = 512` and
 `N = 256` in FP32, while the softmax-fused-only version takes roughly 0.49 ms.
 
-On Nvidia H100:
-
-The fused-attention-style kernel takes roughly 0.18 ms, while the
+On Nvidia H100: The fused-attention-style kernel takes roughly 0.18 ms, while the
 softmax-fused-only version takes roughly 0.13 ms.
 
 The fused-attention-style kernel is doing more work than the softmax-only
@@ -1171,7 +1181,9 @@ the speedup, and which part is now the bottleneck?
 
 What tile sizes make sense for B300 and GH200?
 
-TBD: identify the actual bottleneck before choosing tile sizes. Is the current
+Note that Blackwell and Hopper has enormous L2 Cache, comparing to the Ampere architecture.
+
+Principles: dentify the actual bottleneck before choosing tile sizes. Is the current
 implementation limited by HBM traffic, L2 behavior, shared memory, occupancy, or
 register pressure?
 
@@ -1185,3 +1197,10 @@ I tried to read the FlashAttention paper too early and bounced off it. Going
 back to the naive decomposition helped: first I fused only softmax, then I tried
 to fuse the rest of the pipeline. That made the paper's core idea feel much more
 concrete.
+
+## Further Readings and References
+
+Read the Triton fused-attention tutorial because it exposes variables like
+`m_i`, `l_i`, and `acc`, which map directly to the running softmax state.
+
+Read CUTLASS/CuTe attention examples for the hardware-aware tiled version.
